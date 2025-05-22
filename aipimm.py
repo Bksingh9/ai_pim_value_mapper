@@ -4,13 +4,12 @@ import numpy as np
 import os
 from sentence_transformers import SentenceTransformer, util
 
-st.set_page_config(page_title="AI Attribute Mapper", layout="wide")
+st.set_page_config(page_title="AI Attribute Mapper 1.0", layout="wide")
 st.title("AI Attribute Mapper")
 
 MEMORY_FILE = 'mappings_memory.csv'
 GLOBAL_ATTR_FILE = 'global_attributes.csv'
 VALUE_MEMORY_FILE = 'value_mappings_memory.csv'
-GLOBAL_VALUE_FILE = 'global_value_map.csv'
 CONFIDENCE_THRESHOLD = 0.3
 
 @st.cache_resource
@@ -66,20 +65,22 @@ all_values = []
 
 for sheet_name in selected_markets:
     df = sheets[sheet_name]
-    if df.empty:
+    if df.empty or df.shape[1] < 2:
         continue
     df = df.dropna(subset=[df.columns[0], df.columns[1]])
     for _, row in df.iterrows():
         attr = str(row.iloc[0]).strip()
-        val = str(row.iloc[1]).strip()
-        global_attr = generate_generic_label(attr)
-        global_value_map.setdefault(global_attr, set()).add(val)
-        all_values.append({
-            "Marketplace": sheet_name,
-            "Marketplace Attribute": attr,
-            "Global Attribute": global_attr,
-            "Marketplace Value": val
-        })
+        val_str = str(row.iloc[1]).strip()
+        values = [v.strip() for v in val_str.split(',') if v.strip()]
+        for val in values:
+            global_attr = generate_generic_label(attr)
+            global_value_map.setdefault(global_attr, set()).add(val)
+            all_values.append({
+                "Marketplace": sheet_name,
+                "Marketplace Attribute": attr,
+                "Global Attribute": global_attr,
+                "Marketplace Value": val
+            })
 
 value_df = pd.DataFrame(all_values)
 selected_market = selected_markets[0]
@@ -166,64 +167,3 @@ if st.button("Generate Suggestions") or 'result_df' in st.session_state:
 
     st.subheader("🔍 Marketplace Value Mapping (All Sources)")
     st.dataframe(value_df.drop_duplicates())
-
-    # --- AI-Based Value Mapping ---
-    st.subheader("🧠 AI Value Mapping Based on Richest Marketplace")
-    CONFIDENCE_THRESHOLD = 0.75
-
-    base_map = (
-        value_df.groupby(['Global Attribute', 'Marketplace'])['Marketplace Value']
-        .nunique().reset_index()
-    )
-    base_map = base_map.sort_values(['Global Attribute', 'Marketplace Value'], ascending=[True, False])
-    base_market_lookup = base_map.drop_duplicates('Global Attribute').set_index('Global Attribute')['Marketplace']
-
-    mapped_values = []
-
-    for attr in value_df['Global Attribute'].unique():
-        base_market = base_market_lookup.get(attr)
-        base_vals = value_df[(value_df['Global Attribute'] == attr) & 
-                             (value_df['Marketplace'] == base_market)]['Marketplace Value'].dropna().unique().tolist()
-        base_embs = embed_texts(base_vals)
-
-        for _, row in value_df[value_df['Global Attribute'] == attr].iterrows():
-            mp_val = row['Marketplace Value']
-            mp_emb = embed_texts([mp_val])[0]
-            sims = util.cos_sim(mp_emb, base_embs).flatten().numpy()
-            best_idx = int(np.argmax(sims))
-            best_score = float(sims[best_idx])
-            global_val = base_vals[best_idx] if best_score >= CONFIDENCE_THRESHOLD else mp_val
-            match_type = 'AI' if best_score >= CONFIDENCE_THRESHOLD else 'Original'
-
-            mapped_values.append({
-                "Global Attribute": attr,
-                "Global Value": global_val,
-                "Marketplace": row['Marketplace'],
-                "Marketplace Attribute": row['Marketplace Attribute'],
-                "Marketplace Value": mp_val,
-                "Confidence": round(best_score, 3),
-                "Match Type": match_type
-            })
-
-    value_map_df = pd.DataFrame(mapped_values)
-    value_map_df['Category'] = 'Unknown'
-    st.dataframe(value_map_df)
-    save_memory("value_mapped_results.csv", value_map_df)
-
-    # 📤 Export PIM-Formatted Value Mapping
-    st.subheader("📤 Export: Global Value Mapping Table")
-
-    final_pim_df = value_map_df.pivot_table(
-        index=['Category', 'Global Attribute', 'Global Value'],
-        columns='Marketplace',
-        values='Marketplace Value',
-        aggfunc='first'
-    ).reset_index().fillna("")
-
-    final_pim_df = final_pim_df.rename(columns={
-        'Global Attribute': 'PIM Attribute',
-        'Global Value': 'PIM Attribute Value'
-    })
-
-    csv_data = final_pim_df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download PIM-Formatted Value Mapping", data=csv_data, file_name="PIM_Value_Mapping.csv", mime="text/csv")
