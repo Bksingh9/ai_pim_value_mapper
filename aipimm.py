@@ -4,8 +4,8 @@ import numpy as np
 import os
 from sentence_transformers import SentenceTransformer, util
 
-st.set_page_config(page_title="AI Attribute Mapper 1.0", layout="wide")
-st.title("AI Attribute Mapper 1.0")
+st.set_page_config(page_title="AI Attribute Mapper", layout="wide")
+st.title("AI Attribute Mapper")
 
 MEMORY_FILE = 'mappings_memory.csv'
 GLOBAL_ATTR_FILE = 'global_attributes.csv'
@@ -44,6 +44,9 @@ def load_memory(path, columns):
 def save_memory(path, df):
     df.to_csv(path, index=False)
 
+# ---------------------------
+# STEP 1: Upload and Load File
+# ---------------------------
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file:
@@ -56,10 +59,16 @@ else:
 sheets = st.session_state['sheets']
 st.write("Sheets found:", list(sheets.keys()))
 
+# ---------------------------
+# STEP 2: Marketplace Selection
+# ---------------------------
 selected_markets = st.multiselect("Select Marketplace Sheets", [s for s in sheets if s.lower() != "global"])
 if not selected_markets:
     st.stop()
 
+# ---------------------------
+# STEP 3: Attribute + Value Parsing
+# ---------------------------
 global_value_map = {}
 all_values = []
 
@@ -67,11 +76,11 @@ for sheet_name in selected_markets:
     df = sheets[sheet_name]
     if df.empty or df.shape[1] < 2:
         continue
-    df = df.dropna(subset=[df.columns[0], df.columns[1]])
+    df = df[df[df.columns[0]].notna()]  # Only drop rows with missing attribute name
     for _, row in df.iterrows():
         attr = str(row.iloc[0]).strip()
         val_str = str(row.iloc[1]).strip()
-        values = [v.strip() for v in val_str.split(',') if v.strip()]
+        values = [v.strip() for v in val_str.split(',') if v.strip()]  # Comma-split values
         for val in values:
             global_attr = generate_generic_label(attr)
             global_value_map.setdefault(global_attr, set()).add(val)
@@ -85,6 +94,9 @@ for sheet_name in selected_markets:
 value_df = pd.DataFrame(all_values)
 selected_market = selected_markets[0]
 
+# ---------------------------
+# STEP 4: Attribute Mapping UI
+# ---------------------------
 if st.session_state.get('last_market') != selected_market:
     st.session_state.pop('result_df', None)
 st.session_state['last_market'] = selected_market
@@ -101,6 +113,9 @@ memory_lookup = dict(zip(market_memory['Marketplace Attribute'], market_memory['
 
 st.write("📁 Loaded Marketplace Memory", market_memory)
 
+# ---------------------------
+# STEP 5: AI Attribute Suggestions
+# ---------------------------
 if st.button("Generate Suggestions") or 'result_df' in st.session_state:
     if 'result_df' not in st.session_state:
         global_attrs = list(global_value_map.keys())
@@ -137,6 +152,9 @@ if st.button("Generate Suggestions") or 'result_df' in st.session_state:
     result_df = st.session_state['result_df']
     st.dataframe(result_df)
 
+# ---------------------------
+# STEP 6: Editable Mapping UI + Save
+# ---------------------------
     st.subheader("📝 Edit and Download Mappings")
     edited_df = st.data_editor(result_df, num_rows="dynamic")
     st.session_state['result_df'] = edited_df
@@ -144,6 +162,7 @@ if st.button("Generate Suggestions") or 'result_df' in st.session_state:
     csv = edited_df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Mappings CSV", data=csv, file_name="attribute_mappings.csv", mime="text/csv")
 
+    # Save attribute memory
     mapped = edited_df[edited_df['Mapped Attribute'].fillna('').str.strip() != ""]
     mapped['Marketplace'] = selected_market
     new_memory = mapped[['Marketplace', 'Marketplace Attribute', 'Mapped Attribute']].rename(columns={
@@ -154,6 +173,7 @@ if st.button("Generate Suggestions") or 'result_df' in st.session_state:
     combined = combined.drop_duplicates(subset=['Marketplace', 'Marketplace Attribute'], keep='last')
     save_memory(MEMORY_FILE, combined)
 
+    # Save global attribute list
     new_globals = edited_df[
         ~edited_df['AI Attribute (Suggested)'].isin(global_value_map.keys()) &
         edited_df['AI Attribute (Suggested)'].notna()
@@ -163,7 +183,11 @@ if st.button("Generate Suggestions") or 'result_df' in st.session_state:
     global_df = pd.concat([global_df, pd.DataFrame({"Global Attribute": new_globals})]).drop_duplicates()
     save_memory(GLOBAL_ATTR_FILE, global_df)
 
+    # Save raw value map
     save_memory(VALUE_MEMORY_FILE, value_df.drop_duplicates())
 
-    st.subheader("🔍 Marketplace Value Mapping (All Sources)")
-    st.dataframe(value_df.drop_duplicates())
+# ---------------------------
+# STEP 7: Display Parsed Values
+# ---------------------------
+st.subheader("🔍 Marketplace Value Mapping (All Sources)")
+st.dataframe(value_df.drop_duplicates())
