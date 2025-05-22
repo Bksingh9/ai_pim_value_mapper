@@ -5,7 +5,7 @@ import os
 from sentence_transformers import SentenceTransformer, util
 
 st.set_page_config(page_title="AI Attribute Mapper 1.0", layout="wide")
-st.title("AI Attribute Mapper")
+st.title("AI Attribute Mapper 1.0")
 
 MEMORY_FILE = 'mappings_memory.csv'
 GLOBAL_ATTR_FILE = 'global_attributes.csv'
