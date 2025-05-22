@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,11 +5,12 @@ import os
 from sentence_transformers import SentenceTransformer, util
 
 st.set_page_config(page_title="AI Attribute Mapper", layout="wide")
-st.title("AI Attribute Mapper")
+st.title("AI Attribute Mapper.10")
 
 MEMORY_FILE = 'mappings_memory.csv'
 GLOBAL_ATTR_FILE = 'global_attributes.csv'
 VALUE_MEMORY_FILE = 'value_mappings_memory.csv'
+GLOBAL_VALUE_FILE = 'global_value_map.csv'
 CONFIDENCE_THRESHOLD = 0.3
 
 @st.cache_resource
@@ -68,11 +68,12 @@ for sheet_name in selected_markets:
     df = sheets[sheet_name]
     if df.empty or df.shape[1] < 2:
         continue
+    # ✅ Properly indented
     df = df[df[df.columns[0]].notna()]
     for _, row in df.iterrows():
         attr = str(row.iloc[0]).strip()
-        val_str = str(row.iloc[1]).strip()
-        values = [v.strip() for v in val_str.split(',') if v.strip()] or [""]
+        val_str = str(row.iloc[1]) if pd.notna(row.iloc[1]) else ""
+        values = [v.strip() for v in val_str.split(',')] or [""]
         for val in values:
             global_attr = generate_generic_label(attr)
             global_value_map.setdefault(global_attr, set()).add(val)
@@ -93,8 +94,8 @@ st.session_state['last_market'] = selected_market
 mdf = sheets[selected_market]
 attr_col = mdf.columns[0]
 val_col = mdf.columns[1]
-mdf = mdf.dropna(subset=[attr_col, val_col])
-market_attrs = mdf[attr_col].astype(str).str.strip().unique().tolist()
+mdf = mdf.dropna(subset=[attr_col])
+market_attrs = mdf[attr_col].astype(str).str.strip().tolist()  # ✅ keeps duplicates
 
 memory_df = load_memory(MEMORY_FILE, ['Marketplace', 'Marketplace Attribute', 'Global Attribute'])
 market_memory = memory_df[memory_df['Marketplace'] == selected_market]
