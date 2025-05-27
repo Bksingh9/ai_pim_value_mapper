@@ -1,22 +1,18 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import os
 from sentence_transformers import SentenceTransformer, util
 
 st.set_page_config(page_title="AI Attribute Mapper", layout="wide")
-st.title("AI Attribute Mapper2.1")
+st.title("AI Attribute Mapper 2.2")
 
 MEMORY_FILE = 'mappings_memory.csv'
-GLOBAL_ATTR_FILE = 'global_attributes.csv'
-VALUE_MEMORY_FILE = 'value_mappings_memory.csv'
 VALUE_MAP_FILE = 'value_mapped_results.csv'
 CONFIDENCE_THRESHOLD = 0.75
 
 @st.cache_resource
 def load_model():
     return SentenceTransformer('all-mpnet-base-v2')
-
 model = load_model()
 
 @st.cache_data
@@ -26,9 +22,6 @@ def load_excel(uploaded_file):
 @st.cache_data
 def embed_texts(texts):
     return model.encode(texts, convert_to_tensor=True).cpu().numpy()
-
-def generate_generic_label(attr):
-    return attr.replace('_', ' ').replace('-', ' ').strip().title()
 
 def load_memory(path, columns):
     if not os.path.exists(path):
@@ -45,27 +38,25 @@ def load_memory(path, columns):
 def save_memory(path, df):
     df.to_csv(path, index=False)
 
+# Upload & load sheets
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
-
 if uploaded_file:
-    st.session_state['sheets'] = load_excel(uploaded_file)
+    sheets = load_excel(uploaded_file)
+    st.session_state['sheets'] = sheets
 elif 'sheets' in st.session_state:
     sheets = st.session_state['sheets']
 else:
     st.stop()
 
-sheets = st.session_state['sheets']
 st.write("Sheets found:", list(sheets.keys()))
-
 selected_markets = st.multiselect("Select Marketplace Sheets", [s for s in sheets if s.lower() != "global"])
 if not selected_markets:
     st.stop()
 
-global_value_map = {}
-all_values = []
+# Parse values
+all_rows = []
 raw_attrs = []
 
-# Parse all selected sheets and build initial value_df
 for sheet_name in selected_markets:
     df = sheets[sheet_name]
     if df.empty or df.shape[1] < 2:
@@ -77,149 +68,71 @@ for sheet_name in selected_markets:
         values = [v.strip() for v in val_str.split(',')] or [""]
         raw_attrs.append(attr)
         for val in values:
-            global_attr = generate_generic_label(attr)
-            global_value_map.setdefault(global_attr, set()).add(val)
-            all_values.append({
+            all_rows.append({
                 "Marketplace": sheet_name,
                 "Marketplace Attribute": attr,
-                "Global Attribute": global_attr,
                 "Marketplace Value": val
             })
 
-value_df = pd.DataFrame(all_values)
-
+value_df = pd.DataFrame(all_rows)
 st.subheader("🔍 Parsed Marketplace Attribute-Value Pairs")
 st.dataframe(value_df)
 
-# Attribute mapping (per marketplace)
-selected_market = selected_markets[0]
-if st.session_state.get('last_market') != selected_market:
-    st.session_state.pop('result_df', None)
-st.session_state['last_market'] = selected_market
+# Attribute mapping suggestion
+st.subheader("🔍 Attribute Mapping Suggestions")
+memory_df = load_memory(MEMORY_FILE, ['Marketplace Attribute', 'Global Attribute'])
+memory_lookup = dict(zip(memory_df['Marketplace Attribute'], memory_df['Global Attribute']))
+unique_attrs = pd.Series(raw_attrs).dropna().unique().tolist()
 
-mdf = sheets[selected_market]
-attr_col = mdf.columns[0]
-val_col = mdf.columns[1]
-mdf = mdf[mdf[attr_col].notna()]
-market_attrs = mdf[attr_col].astype(str).str.strip().tolist()  # preserve duplicates
+# Embedding-based suggestion
+global_attrs = list(set(memory_lookup.values()))
+attr_emb = embed_texts(unique_attrs)
+global_emb = embed_texts(global_attrs) if global_attrs else []
 
-memory_df = load_memory(MEMORY_FILE, ['Marketplace', 'Marketplace Attribute', 'Global Attribute'])
-market_memory = memory_df[memory_df['Marketplace'] == selected_market]
-memory_lookup = dict(zip(market_memory['Marketplace Attribute'], market_memory['Global Attribute']))
-
-st.write("📁 Loaded Marketplace Attribute Memory", market_memory)
-
-if st.button("Generate Attribute Suggestions") or 'result_df' in st.session_state:
-    if 'result_df' not in st.session_state:
-        global_attrs = list(global_value_map.keys())
-        g_emb = embed_texts(global_attrs) if global_attrs else []
-        m_emb = embed_texts(market_attrs)
-
-        results = []
-        for idx, attr in enumerate(market_attrs):
-            if attr in memory_lookup and pd.notna(memory_lookup[attr]) and memory_lookup[attr].strip():
-                ai_attr = memory_lookup[attr].strip()
-                mapped_attr = ai_attr
-                confidence = 1.0
-            elif len(g_emb):
-                sims = util.cos_sim(m_emb[idx], g_emb).flatten().numpy()
-                best_idx = np.argmax(sims)
-                best_score = sims[best_idx]
-                ai_attr = global_attrs[best_idx] if best_score >= CONFIDENCE_THRESHOLD else generate_generic_label(attr)
-                mapped_attr = ""
-                confidence = float(best_score)
-            else:
-                ai_attr = generate_generic_label(attr)
-                mapped_attr = ""
-                confidence = 1.0
-
-            results.append({
-                "Marketplace Attribute": attr,
-                "AI Attribute (Suggested)": ai_attr,
-                "Mapped Attribute": mapped_attr,
-                "Confidence": round(confidence, 3)
-            })
-
-        st.session_state['result_df'] = pd.DataFrame(results)
-
-    result_df = st.session_state['result_df']
-    st.dataframe(result_df)
-
-    st.subheader("📝 Edit and Save Attribute Mappings")
-    edited_df = st.data_editor(result_df, num_rows="dynamic")
-    st.session_state['result_df'] = edited_df
-
-    csv = edited_df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Attribute Mappings CSV", data=csv, file_name="attribute_mappings.csv", mime="text/csv")
-
-    # Save attribute memory per marketplace
-    mapped = edited_df[edited_df['Mapped Attribute'].fillna('').str.strip() != ""]
-    mapped['Marketplace'] = selected_market
-    new_memory = mapped[['Marketplace', 'Marketplace Attribute', 'Mapped Attribute']].rename(columns={
-        'Mapped Attribute': 'Global Attribute'
+suggestions = []
+for i, attr in enumerate(unique_attrs):
+    if attr in memory_lookup:
+        mapped = memory_lookup[attr]
+        conf = 1.0
+    elif global_emb is not None and len(global_emb):
+        sims = util.cos_sim(attr_emb[i], global_emb).flatten().numpy()
+        best_idx = sims.argmax()
+        best_score = sims[best_idx]
+        mapped = global_attrs[best_idx] if best_score >= CONFIDENCE_THRESHOLD else attr
+        conf = float(best_score)
+    else:
+        mapped = attr
+        conf = 1.0
+    suggestions.append({
+        "Marketplace Attribute": attr,
+        "Mapped Attribute": mapped,
+        "Confidence": round(conf, 3)
     })
 
-    combined = pd.concat([memory_df, new_memory])
-    combined = combined.drop_duplicates(subset=['Marketplace', 'Marketplace Attribute'], keep='last')
-    save_memory(MEMORY_FILE, combined)
+attr_df = pd.DataFrame(suggestions)
+st.dataframe(attr_df)
 
-    # Update global attributes file
-    new_globals = edited_df[
-        ~edited_df['AI Attribute (Suggested)'].isin(global_value_map.keys()) &
-        edited_df['AI Attribute (Suggested)'].notna()
-    ]['AI Attribute (Suggested)'].dropna().unique().tolist()
+# Editable UI
+edited_df = st.data_editor(attr_df, num_rows="dynamic")
+edited_attr_map = edited_df[['Marketplace Attribute', 'Mapped Attribute']].dropna()
+edited_attr_map = edited_attr_map.rename(columns={'Mapped Attribute': 'Global Attribute'})
 
-    global_df = load_memory(GLOBAL_ATTR_FILE, ['Global Attribute'])
-    global_df = pd.concat([global_df, pd.DataFrame({"Global Attribute": new_globals})]).drop_duplicates()
-    save_memory(GLOBAL_ATTR_FILE, global_df)
+# Save memory
+memory_df = pd.concat([memory_df, edited_attr_map]).drop_duplicates('Marketplace Attribute', keep='last')
+save_memory(MEMORY_FILE, memory_df)
 
-# AI-based value mapping (marketplace-aware)
-st.subheader("🧠 AI Value Mapping Across Marketplaces")
+# Merge mapping into value_df
+value_df = value_df.merge(edited_attr_map, on='Marketplace Attribute', how='left')
+value_df['Global Attribute'] = value_df['Global Attribute'].fillna(value_df['Marketplace Attribute'])
 
-base_map = (
-    value_df.groupby(['Global Attribute', 'Marketplace'])['Marketplace Value']
-    .nunique().reset_index()
-)
-base_map = base_map.sort_values(['Global Attribute', 'Marketplace Value'], ascending=[True, False])
-base_market_lookup = base_map.drop_duplicates('Global Attribute').set_index('Global Attribute')['Marketplace']
+# Value mapping — direct (or AI if you want to turn it on)
+st.subheader("✅ Final Value Mapping Based on Global Attributes")
+value_df['Global Value'] = value_df['Marketplace Value']
 
-mapped_values = []
+# Show & export
+st.dataframe(value_df)
+csv_data = value_df.to_csv(index=False).encode('utf-8')
+st.download_button("Download Final Value Mapping", data=csv_data, file_name="final_value_mapping.csv")
 
-for attr in value_df['Global Attribute'].unique():
-    base_market = base_market_lookup.get(attr)
-    base_vals = value_df[
-        (value_df['Global Attribute'] == attr) &
-        (value_df['Marketplace'] == base_market)
-    ]['Marketplace Value'].dropna().unique().tolist()
-
-    base_embs = embed_texts(base_vals)
-
-    for _, row in value_df[value_df['Global Attribute'] == attr].iterrows():
-        mp_val = row['Marketplace Value']
-        mp_emb = embed_texts([mp_val])[0]
-        sims = util.cos_sim(mp_emb, base_embs).flatten().numpy()
-        best_idx = int(np.argmax(sims))
-        best_score = float(sims[best_idx])
-        global_val = base_vals[best_idx] if best_score >= CONFIDENCE_THRESHOLD else mp_val
-        match_type = 'AI' if best_score >= CONFIDENCE_THRESHOLD else 'Original'
-
-        mapped_values.append({
-            "Marketplace": row['Marketplace'],
-            "Marketplace Attribute": row['Marketplace Attribute'],
-            "Global Attribute": attr,
-            "Marketplace Value": mp_val,
-            "Global Value": global_val,
-            "Confidence": round(best_score, 3),
-            "Match Type": match_type
-        })
-
-value_map_df = pd.DataFrame(mapped_values)
-st.subheader("✅ Final Value Mapping with Global Values")
-st.dataframe(value_map_df)
-
-csv_valmap = value_map_df.to_csv(index=False).encode('utf-8')
-st.download_button("Download Final Value Mapping CSV", data=csv_valmap, file_name="final_value_mapping.csv", mime="text/csv")
-
-# Save value mapping memory
-save_memory(VALUE_MEMORY_FILE, value_df.drop_duplicates())
-save_memory("value_mapped_results.csv", value_map_df)
+# Save value mapping
+save_memory(VALUE_MAP_FILE, value_df)
