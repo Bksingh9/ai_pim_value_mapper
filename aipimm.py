@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
 import os
+import torch
+import time
 from sentence_transformers import SentenceTransformer, util
 
 st.set_page_config(page_title="AI Attribute Mapper", layout="wide")
-st.title("AI Attribute Mapper 3")
+st.title("AI Attribute Mapper 3.1")
 
 MEMORY_FILE = 'mappings_memory.csv'
 VALUE_MAP_FILE = 'value_mapped_results.csv'
@@ -134,14 +136,58 @@ save_memory(MEMORY_FILE, memory_df)
 value_df = value_df.merge(edited_attr_map, on='Marketplace Attribute', how='left')
 value_df['Global Attribute'] = value_df['Global Attribute'].fillna(value_df['Marketplace Attribute'])
 
-# Value mapping — direct (or AI if you want to turn it on)
-st.subheader("✅ Final Value Mapping Based on Global Attributes")
+# Value mapping
 value_df['Global Value'] = value_df['Marketplace Value']
 
-# Show & export
-st.dataframe(value_df)
-csv_data = value_df.to_csv(index=False).encode('utf-8')
-st.download_button("Download Final Value Mapping", data=csv_data, file_name="final_value_mapping.csv")
+# Final Smart Semantic Matrix Output
+st.subheader("📊 Smart Semantic Matrix Output")
+pivot_keys = value_df[["Global Attribute", "Global Value"]].drop_duplicates()
+marketplaces = value_df["Marketplace"].unique()
 
-# Save value mapping
-save_memory(VALUE_MAP_FILE, value_df)
+# Embedding cache
+embedding_cache = {}
+def get_embedding(text):
+    if text not in embedding_cache:
+        embedding_cache[text] = model.encode(text, convert_to_tensor=True)
+    return embedding_cache[text]
+
+def semantic_match(global_val, candidate_vals):
+    if global_val in candidate_vals:
+        return global_val
+    global_emb = get_embedding(global_val)
+    candidate_embs = torch.stack([get_embedding(val) for val in candidate_vals])
+    sims = util.cos_sim(global_emb, candidate_embs)[0]
+    return candidate_vals[sims.argmax()]
+
+# Timed semantic matrix construction
+with st.spinner("Matching values using semantic similarity..."):
+    start_time = time.time()
+
+    semantic_rows = []
+    for _, row in pivot_keys.iterrows():
+        g_attr = row["Global Attribute"]
+        g_val = row["Global Value"]
+
+        result_row = {
+            "PIM Attribute": g_attr,
+            "PIM Attribute Value": g_val
+        }
+
+        for mp in marketplaces:
+            candidates = value_df[
+                (value_df["Global Attribute"] == g_attr) &
+                (value_df["Marketplace"] == mp)
+            ]["Marketplace Value"].tolist()
+
+            result_row[mp] = semantic_match(g_val, candidates) if candidates else "N/A"
+
+        semantic_rows.append(result_row)
+
+    semantic_df = pd.DataFrame(semantic_rows).sort_values(by=["PIM Attribute", "PIM Attribute Value"]).reset_index(drop=True)
+    st.success(f"Semantic mapping completed in {round(time.time() - start_time, 2)} seconds")
+
+st.dataframe(semantic_df)
+
+# Export semantic matrix
+csv_data = semantic_df.to_csv(index=False).encode('utf-8')
+st.download_button("Download Semantic Mapping", data=csv_data, file_name="semantic_mapping.csv")
